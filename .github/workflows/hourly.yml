@@ -1,7 +1,7 @@
 name: hourly
 on:
   schedule:
-    - cron: "20,50 * * * *"   # twice an hour; Blizzard publishes about hourly, duplicate runs exit early
+    - cron: "5,15,25,35,45,55 * * * *"   # every 10 min (public repo: free minutes); GitHub skips some, the rest catch each hourly copy; duplicate runs exit early
   workflow_dispatch:
 permissions:
   contents: write
