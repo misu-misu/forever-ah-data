@@ -1,0 +1,38 @@
+name: hourly
+on:
+  schedule:
+    - cron: "20,50 * * * *"   # twice an hour; Blizzard publishes about hourly, duplicate runs exit early
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: hourly
+  cancel-in-progress: false
+jobs:
+  step:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore previous full copy
+        uses: actions/cache/restore@v4
+        with:
+          path: prev.json.gz
+          key: prev-${{ github.run_id }}
+          restore-keys: prev-
+      - name: Fetch, compare, record
+        env:
+          BLIZZARD_ID: ${{ secrets.BLIZZARD_ID }}
+          BLIZZARD_SECRET: ${{ secrets.BLIZZARD_SECRET }}
+        run: python3 step.py
+      - name: Save new full copy
+        uses: actions/cache/save@v4
+        with:
+          path: prev.json.gz
+          key: prev-${{ github.run_id }}
+      - name: Commit record
+        run: |
+          git config user.name "ah-bot"
+          git config user.email "ah-bot@users.noreply.github.com"
+          git add data
+          git diff --cached --quiet || (git commit -q -m "data $(date -u +%FT%H%M)" && git push -q)
