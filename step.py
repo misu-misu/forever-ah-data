@@ -11,6 +11,12 @@ Sales rules per listing id (old copy -> new copy):
   - vanished while SHORT (<30 min left)                         -> expired, ignored
   - vanished, no cheaper listing of the same item survived      -> sold (buyers take the cheapest first)
   - vanished, a cheaper listing of the same item survived       -> cancelled (likely an undercut relist)
+  - gear only: vanished, and a NEW listing of the same item and quantity appeared at the same price or
+    cheaper                                                     -> relisted, not sold (a 5000g item "selling"
+    2.5 a day on 2026-11-11 was one seller reposting it). Trade goods skip this: thousands of new stacks of
+    20 appear every hour, so it would wipe out real sales.
+Rows: [item, quantity, unit_price, time_left, kind] with kind "i" (gear) or "c" (trade goods); old 4-field
+copies count as trade goods.
 Cancels that pass as sales make the numbers lean HIGH.
 """
 import base64, gzip, json, os, sys, urllib.request
@@ -40,7 +46,7 @@ def fetch():
             if price is None: continue  # bid-only listing
             qty = a.get("quantity", 1)
             if "buyout" in a and qty > 1: price //= qty  # gear buyout covers the whole listing
-            rows[a["id"]] = [a["item"]["id"], qty, price, a.get("time_left", "")]
+            rows[a["id"]] = [a["item"]["id"], qty, price, a.get("time_left", ""), "c" if kind else "i"]
     # guard: a tiny copy means the feed broke, not that the market emptied
     assert len(rows) > 50000, f"only {len(rows)} listings: feed changed or broke?"
     return max(stamps), rows
@@ -48,18 +54,22 @@ def fetch():
 def diff(old, new):
     """Yield (item, units_sold, unit_price) for one pair of copies."""
     survivors_min = {}  # item -> cheapest price among listings that survived untouched
-    for aid, (item, qty, price, tl) in old.items():
+    for aid, (item, qty, price, tl, *_) in old.items():
         if aid in new and new[aid][1] == qty:
             survivors_min[item] = min(price, survivors_min.get(item, price))
-    for aid, (item, qty, price, tl) in old.items():
+    fresh = defaultdict(list)  # gear only: (item, quantity) -> prices of listings that are new in this copy
+    for aid, r in new.items():
+        if aid not in old and r[4:5] == ["i"]: fresh[(r[0], r[1])].append(r[2])
+    for aid, (item, qty, price, tl, *kind) in old.items():
         if aid in new:
             if new[aid][1] < qty: yield item, qty - new[aid][1], price
         elif tl != "SHORT" and price <= survivors_min.get(item, price):
+            if kind == ["i"] and any(p <= price for p in fresh.get((item, qty), ())): continue  # reposted
             yield item, qty, price
 
 def book(rows):
     by = defaultdict(list)
-    for item, qty, price, tl in rows.values(): by[item].append((price, qty))
+    for item, qty, price, *_ in rows.values(): by[item].append((price, qty))
     out = []
     for item, l in by.items():
         low = min(p for p, _ in l)
@@ -71,6 +81,13 @@ def selftest():
     new = {1: [7, 3, 100, "LONG"], 3: [7, 1, 300, "LONG"]}
     assert sorted(diff(old, new)) == [(7, 1, 200), (7, 2, 100), (9, 2, 10)], sorted(diff(old, new))
     assert list(diff({1: [7, 1, 100, "LONG"], 2: [7, 1, 200, "LONG"]}, {1: [7, 1, 100, "LONG"]})) == []  # cancel
+    # gear reposted at the same price or cheaper is not a sale; gone with nothing new is
+    assert list(diff({1: [7, 1, 500, "LONG", "i"]}, {9: [7, 1, 500, "LONG", "i"]})) == []
+    assert list(diff({1: [7, 1, 500, "LONG", "i"]}, {9: [7, 1, 450, "LONG", "i"]})) == []
+    assert list(diff({1: [7, 1, 500, "LONG", "i"]}, {9: [7, 1, 600, "LONG", "i"]})) == [(7, 1, 500)]
+    assert list(diff({1: [7, 1, 500, "LONG", "i"]}, {9: [7, 2, 500, "LONG", "i"]})) == [(7, 1, 500)]
+    # trade goods: a new stack at the same price does not hide a sale
+    assert list(diff({1: [7, 20, 5, "LONG", "c"]}, {9: [7, 20, 5, "LONG", "c"]})) == [(7, 20, 5)]
     assert book({1: [7, 2, 100, ""], 2: [7, 3, 104, ""], 3: [7, 1, 200, ""]}) == [[7, 100, 2, 5, 6]]
 
 def main():
