@@ -3,6 +3,7 @@ copy, and save a small record of estimated sales + current market depth.
 
 Inputs : BLIZZARD_ID / BLIZZARD_SECRET env vars; prev.json.gz (previous full copy, kept in the Actions cache)
 Outputs: data/YYYY-MM-DD/HHMMSS.json.gz = {"t", "prev_t", "sold": [[item, units, unit_price]],
+                                         "expired": [[item, units]] (vanished in their last 30 min: unsold),
                                          "book": [[item, low, units_at_low, units_within_5pct, units_listed]]}
          prev.json.gz replaced with the new full copy.
 
@@ -67,6 +68,13 @@ def diff(old, new):
             if kind == ["i"] and any(p <= price for p in fresh.get((item, qty), ())): continue  # reposted
             yield item, qty, price
 
+def expired(old, new):
+    """Units per item that vanished in their last 30 minutes: ran out unsold (the sale rate needs these)."""
+    out = defaultdict(int)
+    for aid, (item, qty, price, tl, *_) in old.items():
+        if aid not in new and tl == "SHORT": out[item] += qty
+    return [[i, n] for i, n in out.items()]
+
 def book(rows):
     by = defaultdict(list)
     for item, qty, price, *_ in rows.values(): by[item].append((price, qty))
@@ -88,6 +96,7 @@ def selftest():
     assert list(diff({1: [7, 1, 500, "LONG", "i"]}, {9: [7, 2, 500, "LONG", "i"]})) == [(7, 1, 500)]
     # trade goods: a new stack at the same price does not hide a sale
     assert list(diff({1: [7, 20, 5, "LONG", "c"]}, {9: [7, 20, 5, "LONG", "c"]})) == [(7, 20, 5)]
+    assert expired({1: [7, 3, 5, "SHORT"], 2: [7, 1, 5, "SHORT"], 3: [8, 1, 5, "LONG"]}, {2: [7, 1, 5, "SHORT"]}) == [[7, 3]]
     assert book({1: [7, 2, 100, ""], 2: [7, 3, 104, ""], 3: [7, 1, 200, ""]}) == [[7, 100, 2, 5, 6]]
 
 def main():
@@ -100,12 +109,13 @@ def main():
     if prev_t == t:
         print("Blizzard hasn't published a new copy yet"); return
     sold = [list(s) for s in diff(prev, rows)] if prev else []
+    gone = expired(prev, rows) if prev else []
     from datetime import datetime, timezone
     when = datetime.fromtimestamp(t, timezone.utc)
     out = Path("data") / when.strftime("%Y-%m-%d") / (when.strftime("%H%M%S") + ".json.gz")
     out.parent.mkdir(parents=True, exist_ok=True)
     with gzip.open(out, "wt") as f:
-        json.dump({"t": t, "prev_t": prev_t, "sold": sold, "book": book(rows)}, f, separators=(",", ":"))
+        json.dump({"t": t, "prev_t": prev_t, "sold": sold, "expired": gone, "book": book(rows)}, f, separators=(",", ":"))
     with gzip.open(PREV, "wt") as f: json.dump({"t": t, "rows": rows}, f, separators=(",", ":"))
     print(f"saved {out}: {len(rows)} listings, {len(sold)} sales events since previous copy")
 
