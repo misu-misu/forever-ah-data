@@ -47,10 +47,17 @@ def fetch():
             if price is None: continue  # bid-only listing
             qty = a.get("quantity", 1)
             if "buyout" in a and qty > 1: price //= qty  # gear buyout covers the whole listing
-            rows[a["id"]] = [a["item"]["id"], qty, price, a.get("time_left", ""), "c" if kind else "i"]
+            rows[a["id"]] = [item_key(a["item"]), qty, price, a.get("time_left", ""), "c" if kind else "i", 1 if "bid" in a else 0]
     # guard: a tiny copy means the feed broke, not that the market emptied
     assert len(rows) > 50000, f"only {len(rows)} listings: feed changed or broke?"
     return max(stamps), rows
+
+def item_key(it):
+    """Gear variants ("of the Bear" vs "of the Monkey") share one item id but sell for very different prices.
+    Blizzard marks the variant in bonus_lists (2026-11-12: 37,223 of 152,286 gear listings carry one), so a
+    variant is keyed "id:bonus" (bonuses sorted, joined by "-"); everything else stays the plain item id."""
+    b = it.get("bonus_lists")
+    return f"{it['id']}:{'-'.join(str(x) for x in sorted(b))}" if b else it["id"]
 
 def diff(old, new):
     """Yield (item, units_sold, unit_price) for one pair of copies."""
@@ -65,7 +72,7 @@ def diff(old, new):
         if aid in new:
             if new[aid][1] < qty: yield item, qty - new[aid][1], price
         elif tl != "SHORT" and price <= survivors_min.get(item, price):
-            if kind == ["i"] and any(p <= price for p in fresh.get((item, qty), ())): continue  # reposted
+            if kind[:1] == ["i"] and any(p <= price for p in fresh.get((item, qty), ())): continue  # reposted
             yield item, qty, price
 
 def expired(old, new):
@@ -77,7 +84,9 @@ def expired(old, new):
 
 def book(rows):
     by = defaultdict(list)
-    for item, qty, price, *_ in rows.values(): by[item].append((price, qty))
+    for item, qty, price, *rest in rows.values():
+        if rest[2:3] == [1]: continue   # has a bid: may be a "bid-lock" (a seller bids on his own cheap listing so
+        by[item].append((price, qty))   # nobody can buy it, yet it shows as the cheapest); never a price to trust
     out = []
     for item, l in by.items():
         low = min(p for p, _ in l)
@@ -98,6 +107,11 @@ def selftest():
     assert list(diff({1: [7, 20, 5, "LONG", "c"]}, {9: [7, 20, 5, "LONG", "c"]})) == [(7, 20, 5)]
     assert expired({1: [7, 3, 5, "SHORT"], 2: [7, 1, 5, "SHORT"], 3: [8, 1, 5, "LONG"]}, {2: [7, 1, 5, "SHORT"]}) == [[7, 3]]
     assert book({1: [7, 2, 100, ""], 2: [7, 3, 104, ""], 3: [7, 1, 200, ""]}) == [[7, 100, 2, 5, 6]]
+    assert book({1: [7, 1, 10, "", "i", 1], 2: [7, 1, 100, "", "i", 0]}) == [[7, 100, 1, 1, 1]], "bid-locked 10c ignored"
+    assert item_key({"id": 9815, "bonus_lists": [12745]}) == "9815:12745" and item_key({"id": 2589}) == 2589
+    assert item_key({"id": 5, "bonus_lists": [9, 3]}) == "5:3-9"
+    # a gear row with the bid flag still counts as gear for the repost check
+    assert list(diff({1: [7, 1, 500, "LONG", "i", 0]}, {9: [7, 1, 500, "LONG", "i", 0]})) == []
 
 def main():
     selftest()
