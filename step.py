@@ -12,10 +12,12 @@ Sales rules per listing id (old copy -> new copy):
   - vanished while SHORT (<30 min left)                         -> expired, ignored
   - vanished, no cheaper listing of the same item survived      -> sold (buyers take the cheapest first)
   - vanished, a cheaper listing of the same item survived       -> cancelled (likely an undercut relist)
-  - gear only: vanished, and a NEW listing of the same item and quantity appeared at the same price or
-    cheaper                                                     -> relisted, not sold (a 5000g item "selling"
-    2.5 a day on 2026-11-11 was one seller reposting it). Trade goods skip this: thousands of new stacks of
-    20 appear every hour, so it would wipe out real sales.
+  - vanished, and a NEW listing of the same item and quantity appeared at the same price or cheaper (gear)
+    or strictly cheaper (trade goods)                           -> relisted, not sold (a 5000g item "selling"
+    2.5 a day on 2026-11-11 was one seller reposting it). Each new listing explains at most ONE vanished
+    listing, so the thousands of new stacks of 20 each hour can't wipe out real sales (2026-11-12: trade
+    goods were left out before; a buy list built on their counts resold only 11%). When unsure it leans
+    toward "not sold": undercounting sales makes the add-on buy less, never more.
 Rows: [item, quantity, unit_price, time_left, kind] with kind "i" (gear) or "c" (trade goods); old 4-field
 copies count as trade goods.
 Cancels that pass as sales make the numbers lean HIGH.
@@ -65,14 +67,16 @@ def diff(old, new):
     for aid, (item, qty, price, tl, *_) in old.items():
         if aid in new and new[aid][1] == qty:
             survivors_min[item] = min(price, survivors_min.get(item, price))
-    fresh = defaultdict(list)  # gear only: (item, quantity) -> prices of listings that are new in this copy
+    fresh = defaultdict(list)  # (item, quantity) -> prices of listings that are new in this copy
     for aid, r in new.items():
-        if aid not in old and r[4:5] == ["i"]: fresh[(r[0], r[1])].append(r[2])
-    for aid, (item, qty, price, tl, *kind) in old.items():
+        if aid not in old: fresh[(r[0], r[1])].append(r[2])
+    for aid, (item, qty, price, tl, *kind) in sorted(old.items(), key=lambda kv: kv[1][2]):   # cheapest first
         if aid in new:
             if new[aid][1] < qty: yield item, qty - new[aid][1], price
         elif tl != "SHORT" and price <= survivors_min.get(item, price):
-            if kind[:1] == ["i"] and any(p <= price for p in fresh.get((item, qty), ())): continue  # reposted
+            f, gear = fresh.get((item, qty), []), kind[:1] == ["i"]
+            m = [p for p in f if p <= price] if gear else [p for p in f if p < price]
+            if m: f.remove(max(m)); continue   # reposted; that new listing is used up
             yield item, qty, price
 
 def expired(old, new):
@@ -103,8 +107,12 @@ def selftest():
     assert list(diff({1: [7, 1, 500, "LONG", "i"]}, {9: [7, 1, 450, "LONG", "i"]})) == []
     assert list(diff({1: [7, 1, 500, "LONG", "i"]}, {9: [7, 1, 600, "LONG", "i"]})) == [(7, 1, 500)]
     assert list(diff({1: [7, 1, 500, "LONG", "i"]}, {9: [7, 2, 500, "LONG", "i"]})) == [(7, 1, 500)]
-    # trade goods: a new stack at the same price does not hide a sale
+    # trade goods: a new stack at the same price does not hide a sale; a cheaper one does, once
     assert list(diff({1: [7, 20, 5, "LONG", "c"]}, {9: [7, 20, 5, "LONG", "c"]})) == [(7, 20, 5)]
+    assert list(diff({1: [7, 20, 5, "LONG", "c"]}, {9: [7, 20, 4, "LONG", "c"]})) == []
+    two = {1: [7, 20, 5, "LONG", "c"], 2: [7, 20, 5, "LONG", "c"]}
+    assert list(diff(two, {9: [7, 20, 4, "LONG", "c"]})) == [(7, 20, 5)], "one new stack explains one gone stack"
+    assert list(diff({1: [7, 1, 500, "LONG", "i"], 2: [7, 1, 500, "LONG", "i"]}, {9: [7, 1, 500, "LONG", "i"]})) == [(7, 1, 500)]
     assert expired({1: [7, 3, 5, "SHORT"], 2: [7, 1, 5, "SHORT"], 3: [8, 1, 5, "LONG"]}, {2: [7, 1, 5, "SHORT"]}) == [[7, 3]]
     assert book({1: [7, 2, 100, ""], 2: [7, 3, 104, ""], 3: [7, 1, 200, ""]}) == [[7, 100, 2, 5, 6]]
     assert book({1: [7, 1, 10, "", "i", 1], 2: [7, 1, 100, "", "i", 0]}) == [[7, 100, 1, 1, 1]], "bid-locked 10c ignored"
