@@ -25,14 +25,20 @@ jobs:
           BLIZZARD_ID: ${{ secrets.BLIZZARD_ID }}
           BLIZZARD_SECRET: ${{ secrets.BLIZZARD_SECRET }}
         run: python3 step.py
-      - name: Save new full copy
-        uses: actions/cache/save@v4
-        with:
-          path: prev.json.gz
-          key: prev-${{ github.run_id }}
+      # 2026-11-16: a run queued behind another starts from an older copy of the repo, so its push was refused
+      # ("fetch first") AFTER it had saved the new full copy: the next runs saw nothing new and that hour was lost.
+      # Now it catches up before pushing (3 tries), and the full copy is saved only once the record is pushed.
       - name: Commit record
         run: |
           git config user.name "ah-bot"
           git config user.email "ah-bot@users.noreply.github.com"
           git add data
-          git diff --cached --quiet || (git commit -q -m "data $(date -u +%FT%H%M)" && git push -q)
+          git diff --cached --quiet && exit 0
+          git commit -q -m "data $(date -u +%FT%H%M)"
+          for i in 1 2 3; do git pull -q --rebase && git push -q && exit 0; sleep 5; done
+          exit 1
+      - name: Save new full copy
+        uses: actions/cache/save@v4
+        with:
+          path: prev.json.gz
+          key: prev-${{ github.run_id }}
