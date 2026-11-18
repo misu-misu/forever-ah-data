@@ -30,6 +30,10 @@ from pathlib import Path
 HOUSE = 113  # Horde PvP US: matched 80% of lowest prices to Mike's in-game scan on 2026-11-10 (other houses 11-21%)
 API = "https://us.api.blizzard.com/data/wow/ruleset/1/auctions/{}{}?namespace=dynamic-forever-us"
 PREV = Path("prev.json.gz")
+# Mike 2026-11-18 ("Yes, record it"): also the neutral Blackwater house paired with 113 (ids go in threes: Alliance
+# 110 / Horde 113 / Blackwater 116). ~24,000 listings vs ~180,000, so its own "too small" guard. Records go to
+# neutral/ so nothing that reads data/ mixes the two markets. Its failure never costs the Horde record.
+HOUSES = [(113, Path("data"), PREV, 50000), (116, Path("neutral"), Path("prev116.json.gz"), 5000)]
 
 def token():
     auth = base64.b64encode(f"{os.environ['BLIZZARD_ID']}:{os.environ['BLIZZARD_SECRET']}".encode()).decode()
@@ -37,10 +41,10 @@ def token():
                                  headers={"Authorization": "Basic " + auth})
     return json.load(urllib.request.urlopen(req, timeout=60))["access_token"]
 
-def fetch():
-    tok, rows, stamps = token(), {}, []
+def fetch(tok, house=HOUSE, least=50000):
+    rows, stamps = {}, []
     for kind in ("", "/commodities"):
-        req = urllib.request.Request(API.format(HOUSE, kind), headers={"Authorization": "Bearer " + tok, "Accept-Encoding": "gzip"})
+        req = urllib.request.Request(API.format(house, kind), headers={"Authorization": "Bearer " + tok, "Accept-Encoding": "gzip"})
         resp = urllib.request.urlopen(req, timeout=120); b = resp.read()
         if resp.headers.get("Content-Encoding") == "gzip": b = gzip.decompress(b)
         stamps.append(parsedate_to_datetime(resp.headers["Last-Modified"]).timestamp())
@@ -51,7 +55,7 @@ def fetch():
             if "buyout" in a and qty > 1: price //= qty  # gear buyout covers the whole listing
             rows[a["id"]] = [item_key(a["item"]), qty, price, a.get("time_left", ""), "c" if kind else "i", 1 if "bid" in a else 0]
     # guard: a tiny copy means the feed broke, not that the market emptied
-    assert len(rows) > 50000, f"only {len(rows)} listings: feed changed or broke?"
+    assert len(rows) > least, f"house {house}: only {len(rows)} listings: feed changed or broke?"
     return max(stamps), rows
 
 def item_key(it):
@@ -123,18 +127,26 @@ def selftest():
 
 def main():
     selftest()
-    t, rows = fetch()
+    tok = token()
+    for i, (house, folder, prev_file, least) in enumerate(HOUSES):
+        try: step(tok, house, folder, prev_file, least)
+        except Exception as e:
+            if i == 0: raise          # the Horde record is the one that matters: fail loudly
+            print(f"house {house} skipped this hour: {e!r}")
+
+def step(tok, house, folder, PREV, least):
+    t, rows = fetch(tok, house, least)
     prev_t, prev = None, None
     if PREV.exists():
         with gzip.open(PREV, "rt") as f: d = json.load(f)
         prev_t, prev = d["t"], {int(k): v for k, v in d["rows"].items()}
     if prev_t == t:
-        print("Blizzard hasn't published a new copy yet"); return
+        print(f"house {house}: Blizzard hasn't published a new copy yet"); return
     sold = [list(s) for s in diff(prev, rows)] if prev else []
     gone = expired(prev, rows) if prev else []
     from datetime import datetime, timezone
     when = datetime.fromtimestamp(t, timezone.utc)
-    out = Path("data") / when.strftime("%Y-%m-%d") / (when.strftime("%H%M%S") + ".json.gz")
+    out = folder / when.strftime("%Y-%m-%d") / (when.strftime("%H%M%S") + ".json.gz")
     out.parent.mkdir(parents=True, exist_ok=True)
     with gzip.open(out, "wt") as f:
         json.dump({"t": t, "prev_t": prev_t, "sold": sold, "expired": gone, "book": book(rows)}, f, separators=(",", ":"))
