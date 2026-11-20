@@ -1,3 +1,7 @@
 prev.json.gz
 __pycache__/
 prev116.json.gz
+tsm_items.csv
+replay_cache.pkl
+ResalePrices.lua
+*.tmp

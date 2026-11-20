@@ -1,0 +1,60 @@
+name: prices
+# 2026-11-20: the owner's PC ran hot rebuilding the price list every hour. Now it is built here after each new
+# record and published as the release asset "prices/ResalePrices.lua"; the PC only downloads it (seconds).
+on:
+  workflow_run:
+    workflows: [hourly]
+    types: [completed]
+  push:
+    paths: [resale.py, exits.py, .github/workflows/prices.yml]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: prices
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      # hourly runs every 10 min and most find nothing new: build only when the repo moved since the last build
+      - name: New records or code since the last build?
+        id: check
+        run: |
+          built=$(gh release view prices --json body -q .body 2>/dev/null | head -1 | cut -d' ' -f1 || true)
+          if [ "$built" = "$(git rev-parse HEAD)" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "already built from $built"; echo "skip=1" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Restore the safety check's saved answers
+        if: steps.check.outputs.skip != '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: replay_cache.pkl
+          key: replay-${{ github.run_id }}
+          restore-keys: replay-
+      - name: Build the price list
+        if: steps.check.outputs.skip != '1'
+        run: python3 resale.py | tee summary.txt
+      # never publish a broken file: the PC keeps its old one when the download is missing or cut short
+      - name: Check the file is whole
+        if: steps.check.outputs.skip != '1'
+        run: |
+          test "$(stat -c %s ResalePrices.lua)" -gt 1000000
+          tail -1 ResalePrices.lua | grep -q '^VendorSnipeSuffix = {.*}$'
+      - name: Publish
+        if: steps.check.outputs.skip != '1'
+        run: |
+          gh release view prices >/dev/null 2>&1 || gh release create prices --title "Price list" --notes "new"
+          gh release upload prices ResalePrices.lua --clobber
+          printf '%s built %s\n%s\n' "$(git rev-parse HEAD)" "$(date -u +%FT%TZ)" "$(cat summary.txt)" > notes.txt
+          gh release edit prices --notes-file notes.txt
+      - name: Save the safety check's answers
+        if: steps.check.outputs.skip != '1'
+        uses: actions/cache/save@v4
+        with:
+          path: replay_cache.pkl
+          key: replay-${{ github.run_id }}
