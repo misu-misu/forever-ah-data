@@ -27,7 +27,7 @@ nothing). Nov 20: 2,832 test buys, 3,231g spent, -71g so far, 1,140g unsold -> O
 off while ok is false; Bargain Watch does not use it.
 
 TSM sale rates (owner, 2026-11-13, "2a"): TradeSkillMaster's free public Forever file (US region: sale rate,
-sold per day, 14-day market value) is written as VendorSnipeTSM, for the add-on's second "does it sell" check. One region figure for
+sold per day, 14-day market value, region average sale price) is written as VendorSnipeTSM, for the add-on's second "does it sell" check. One region figure for
 all rulesets and factions together. Downloaded at most once an hour; a copy older than TSM_MAX_AGE is not used.
 """
 import re, calendar, csv, gzip, io, json, statistics, subprocess, time, urllib.request
@@ -54,11 +54,11 @@ TSM_CACHE, TSM_MAX_AGE = HERE / "tsm_items.csv", 3 * 86400
 REPLAY_CACHE, CACHE_KEEP = HERE / "replay_cache.pkl", 3000   # replay()'s saved answers, newest used kept
 
 def tsm_parse(text, keep):
-    """{item: [sale rate, sold per day, 14-day market value in copper]} for the items in keep, from TSM's items.csv"""
+    """{item: [sale rate, sold per day, 14-day market value, region average sale price (copper)]} for keep, from TSM's items.csv"""
     out = {}
     for row in csv.DictReader(io.StringIO(text)):
         i = int(row["itemId"])
-        if i in keep: out[i] = [float(row["saleRate"] or 0), float(row["soldPerDay"] or 0), int(float(row["marketValue"] or 0))]
+        if i in keep: out[i] = [float(row["saleRate"] or 0), float(row["soldPerDay"] or 0), int(float(row["marketValue"] or 0)), int(float(row["avgSalePrice"] or 0))]
     return out
 
 def tsm_date(text):
@@ -301,7 +301,7 @@ def lua(data):
             f"VendorSnipeResale = {{hours = {data['hours']}, t = {data['t']}, ok = {'true' if data.get('ok') else 'false'}, items = {{\n{rows}\n}}}}\n"
             + "-- [item] = {typical price over the last 24h, units sold in 24h, hours seen}\nVendorSnipeMarket = {"
             + ",".join(f"[{i}]={{{p},{s},{h}}}" for i, (p, s, h) in sorted(data.get("market", {}).items())) + "}\n"
-            + "-- TSM's US Forever region data: [item] = {sale rate, sold per day, 14-day market value}; nil = no fresh copy\nVendorSnipeTSM = "
+            + "-- TSM's US Forever region data: [item] = {sale rate, sold per day, 14-day market value, region average sale price}; nil = no fresh copy\nVendorSnipeTSM = "
             + ("nil" if data.get("tsm") is None else "{" + ",".join(f"[{i}]={{{','.join(str(x) for x in v)}}}" for i, v in sorted(data["tsm"].items())) + "}") + "\n"
             + f"-- when TSM last updated that data (unix time, 0 = unknown)\nVendorSnipeTSMDate = {data.get('tsm_t', 0)}\n"
             + "-- random-stat versions on our server: [lowest bonus id] = {sold a day over all items with it, share of listings that sell}\nVendorSnipeSuffix = {"
@@ -400,7 +400,7 @@ def selftest():
     assert tsm_date("itemId,updatedAt\n1,2026-11-13T08:38:44Z\n2,0\n") == 1794559124 and tsm_date("itemId,updatedAt\n") == 0
     assert "VendorSnipeTSMDate = 0" in lua(d) and "VendorSnipeTSMDate = 5" in lua({**d, "tsm_t": 5})
     t = tsm_parse("itemId,name,marketValue,historical,avgSalePrice,saleRate,soldPerDay,updatedAt\n7,X,1,1,1,0.65,1.3,z\n8,Y,1,1,1,,,z\n", {7, 8, 9})
-    assert t == {7: [0.65, 1.3, 1], 8: [0.0, 0.0, 1]}, t
+    assert t == {7: [0.65, 1.3, 1, 1], 8: [0.0, 0.0, 1, 1]}, t
     # falling: a day at 10g then a day at 8g -> 0.8; steady -> 1; too few hours -> 1 (never blocks)
     assert trend([80000] * 6, [100000] * 6) == 0.8 and trend([100] * 24, [100] * 24) == 1.0 and trend([1] * 5, [9] * 24) == 1
     fall2 = [{"t": i * h, "prev_t": (i - 1) * h if i else None, "sold": [[2, 1, 100000 if i < 24 else 80000]] if i else [],
