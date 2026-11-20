@@ -385,6 +385,8 @@ def selftest():
     assert replay(mk(2, True)) == (1, 10000, int(2 * int(9999 * 0.95) * (1 - exits.FEE_SHARE))), "2 at the cheapest: both bought, both resold"
     assert replay(mk(1, True, rival=False)) == (1, 5000, one), "no rival: listed 1c under the normal price, never above it"
     assert replay(mk(1, False)) == (1, 5000, 0), "no sales after the buy: no gold back (never dumped, never valued)"
+    twice = mk(1, True); twice[12]["book"] = [[5, 5000, 1, 1, 5]]
+    assert replay(twice)[0] == 1, "cheap again 3 hours later: still one test buy (counted at its first buy)"
     c = {}
     assert replay(mk(1, True), c) == replay(mk(1, True)) and c, "first run with a cache: same answer, cache filled"
     assert replay(mk(1, True), {k: [] for k in c}) == (0, 0, 0), "a cached answer is used, not recomputed"
